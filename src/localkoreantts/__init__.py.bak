@@ -1,0 +1,11 @@
+"""Local Korean TTS core package."""
+
+from .tts import SynthesisRequest, SynthesisResult, TextToSpeechEngine
+
+__all__ = [
+    "SynthesisRequest",
+    "SynthesisResult",
+    "TextToSpeechEngine",
+]
+
+__version__ = "0.1.0"

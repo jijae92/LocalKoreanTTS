@@ -1,0 +1,85 @@
+"""Simple file-based caching for synthesized audio."""
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from . import utils
+
+DEFAULT_CACHE_DIR = "~/.cache/localkoreantts"
+
+
+@dataclass(frozen=True)
+class CacheRecord:
+    """Metadata describing a cached synthesis output."""
+
+    key: str
+    payload_path: Path
+    created_at: float
+
+    def to_dict(self) -> dict[str, str]:
+        """Serialize the record as JSON safe data."""
+        return {
+            "key": self.key,
+            "payload_path": str(self.payload_path),
+            "created_at": str(self.created_at),
+        }
+
+
+class CacheManager:
+    """Manage cached synthesis artefacts on disk."""
+
+    def __init__(self, base_dir: Optional[Path] = None) -> None:
+        default_base = utils.get_env_path("LK_TTS_CACHE_DIR", DEFAULT_CACHE_DIR)
+        self._base_dir = utils.ensure_directory(base_dir or default_base)
+        self._records_dir = utils.ensure_directory(self._base_dir / "records")
+        self._payload_dir = utils.ensure_directory(self._base_dir / "payloads")
+
+    @property
+    def base_dir(self) -> Path:
+        """Return the root cache directory."""
+        return self._base_dir
+
+    def build_key(self, *, text: str, voice: str, speed: float, sample_rate: int) -> str:
+        """Create a stable cache key for the provided synthesis inputs."""
+        digest = hashlib.sha256()
+        digest.update(text.encode("utf-8"))
+        digest.update(voice.encode("utf-8"))
+        digest.update(str(speed).encode("ascii"))
+        digest.update(str(sample_rate).encode("ascii"))
+        key = digest.hexdigest()
+        utils.LOGGER.debug("Built cache key", extra={"key": key})
+        return key
+
+    def _record_path(self, key: str) -> Path:
+        return self._records_dir / f"{key}.json"
+
+    def _payload_path(self, key: str, extension: str = ".txt") -> Path:
+        return self._payload_dir / f"{key}{extension}"
+
+    def get(self, key: str) -> Optional[CacheRecord]:
+        """Return an existing cache record if found."""
+        record_path = self._record_path(key)
+        if not record_path.exists():
+            return None
+        data = json.loads(record_path.read_text(encoding="utf-8"))
+        payload_path = Path(data["payload_path"])
+        if not payload_path.exists():
+            return None
+        record = CacheRecord(key=key, payload_path=payload_path, created_at=float(data["created_at"]))
+        utils.LOGGER.debug("Cache hit", extra={"key": key, "payload": str(payload_path)})
+        return record
+
+    def set(self, key: str, contents: str, extension: str = ".txt") -> CacheRecord:
+        """Persist new cached contents and metadata."""
+        payload_path = self._payload_path(key, extension=extension)
+        payload_path.write_text(contents, encoding="utf-8")
+        record = CacheRecord(key=key, payload_path=payload_path, created_at=time.time())
+        record_path = self._record_path(key)
+        record_path.write_text(json.dumps(record.to_dict()), encoding="utf-8")
+        utils.LOGGER.debug("Cache stored", extra={"key": key, "payload": str(payload_path)})
+        return record

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtWidgets import (  # type: ignore[import-not-found]
+from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -36,7 +36,7 @@ class SettingsData:
     default_speed: float
 
 
-class SettingsDialog(QDialog):  # type: ignore[misc]
+class SettingsDialog(QDialog):
     """Modal dialog used to edit persistent settings."""
 
     def __init__(
@@ -79,7 +79,7 @@ class SettingsDialog(QDialog):  # type: ignore[misc]
         form.addRow("샘플레이트", self._sample_rate_spin)
         form.addRow("기본 속도", self._default_speed_spin)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 

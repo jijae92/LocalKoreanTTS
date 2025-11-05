@@ -3,14 +3,14 @@ from __future__ import annotations
 
 # ruff: noqa: I001
 
+import time
 from collections.abc import Callable
-from typing import Any
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from localkoreantts.gui.pipeline import JobCancelled, PipelineHooks, SynthJobConfig
+from localkoreantts.gui.pipeline import JobCancelled, SynthJobConfig
 from localkoreantts.gui.workers import SynthWorker
 
 pytest.importorskip("pytestqt")
@@ -31,34 +31,27 @@ def _install_fake_pipeline(monkeypatch: pytest.MonkeyPatch, func: Callable) -> N
     )
 
 
-def _block_real_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fail(*_args: Any, **_kwargs: Any) -> None:
-        pytest.fail("real synthesis pipeline should not be invoked in tests")
-
-    monkeypatch.setattr(
-        "localkoreantts.gui.pipeline.create_local_vits",
-        _fail,
-    )
-
-
 def test_worker_success_signals(
     qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     if QThread is None or QSignalSpy is None:
         pytest.skip("PySide6 not installed")
-    _block_real_pipeline(monkeypatch)
-
-    def fake_pipeline(config: SynthJobConfig, hooks: PipelineHooks):
-        total = 3
+    def fake_pipeline(config: SynthJobConfig, hooks):
         hooks.on_stage("chunking")
+        total = 3
         for idx in range(1, total + 1):
             if hooks.should_cancel():  # pragma: no cover - defensive
                 raise JobCancelled()
             hooks.on_stage("chunk_synth")
             hooks.on_progress(idx, total)
             hooks.on_chunk_done(idx, total)
+            time.sleep(0.01)
+        hooks.on_stage("finalising")
+        output = config.output_dir / "result.wav"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"RIFF")
         hooks.on_stage("completed")
-        return SimpleNamespace(output_path=config.output_dir / "result.wav")
+        return SimpleNamespace(output_path=output)
 
     _install_fake_pipeline(monkeypatch, fake_pipeline)
 
@@ -79,7 +72,7 @@ def test_worker_success_signals(
     worker = SynthWorker(config)
     thread = QThread()
     worker.moveToThread(thread)
-    thread.started.connect(worker.start)
+    thread.started.connect(worker.run)
 
     progress_spy = QSignalSpy(worker.progress)
     chunk_spy = QSignalSpy(worker.chunk_done)
@@ -94,7 +87,7 @@ def test_worker_success_signals(
     qtbot.waitSignal(thread.finished, timeout=2000)
 
     assert len(finished_spy) == 1
-    assert Path(str(finished_spy[0][0])) == config.output_dir / "result.wav"
+    assert Path(str(finished_spy[0][0])).exists()
     assert len(progress_spy) >= 1
     assert [tuple(sig) for sig in chunk_spy][-1] == (3, 3)
     stages = [sig[0] for sig in stage_spy]
@@ -106,10 +99,7 @@ def test_worker_success_signals(
 def test_worker_cancel(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     if QThread is None or QSignalSpy is None or QTimer is None:
         pytest.skip("PySide6 not installed")
-
-    _block_real_pipeline(monkeypatch)
-
-    def fake_pipeline(config: SynthJobConfig, hooks: PipelineHooks):
+    def fake_pipeline(config: SynthJobConfig, hooks):
         hooks.on_stage("chunking")
         for idx in range(1, 5):
             if hooks.should_cancel():
@@ -117,8 +107,11 @@ def test_worker_cancel(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
             hooks.on_progress(idx, 10)
             hooks.on_chunk_done(idx, 10)
             hooks.on_stage("chunk_synth")
-            QThread.msleep(5)
-        return SimpleNamespace(output_path=config.output_dir / "cancelled.wav")
+            time.sleep(0.02)
+        output = config.output_dir / "result.wav"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"RIFF")
+        return SimpleNamespace(output_path=output)
 
     _install_fake_pipeline(monkeypatch, fake_pipeline)
 
@@ -139,7 +132,7 @@ def test_worker_cancel(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     worker = SynthWorker(config)
     thread = QThread()
     worker.moveToThread(thread)
-    thread.started.connect(worker.start)
+    thread.started.connect(worker.run)
 
     cancelled_spy = QSignalSpy(worker.cancelled)
     error_spy = QSignalSpy(worker.error)

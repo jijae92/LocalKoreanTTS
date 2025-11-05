@@ -1,0 +1,60 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "localkoreantts"
+version = "0.1.0"
+description = "Local Korean TTS library skeleton"
+authors = ["Local Korean TTS Maintainers <maintainers@example.com>"]
+readme = "README.md"
+license = "MIT"
+packages = [{ include = "localkoreantts", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-cov = "^4.1.0"
+ruff = "^0.6.4"
+mypy = "^1.11.1"
+
+[tool.poetry.scripts]
+localkoreantts = "localkoreantts.cli:main"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+mypy_path = ["src"]
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+plugins = []
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "UP"]
+ignore = ["TD002", "TD003"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/localkoreantts"]
+omit = ["src/localkoreantts/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
+
+[tool.coverage.paths]
+source = ["src/localkoreantts"]

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import cast
 
-from PySide6.QtCore import Qt, Signal  # type: ignore[import-not-found]
-from PySide6.QtWidgets import (  # type: ignore[import-not-found]
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (  # type: ignore[import-not-found]
 )
 
 
-class ControlsView(QWidget):  # type: ignore[misc]
+class ControlsView(QWidget):
     """Widget exposing synthesis parameters and action buttons."""
 
     chunk_preview_requested = Signal()
@@ -28,7 +28,7 @@ class ControlsView(QWidget):  # type: ignore[misc]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._speed_slider = QSlider(Qt.Horizontal, self)
+        self._speed_slider = QSlider(Qt.Orientation.Horizontal, self)
         self._speed_slider.setRange(60, 160)
         self._speed_slider.setValue(100)
         self._speed_label = QLabel("재생 속도: 1.00x", self)
@@ -107,7 +107,7 @@ class ControlsView(QWidget):  # type: ignore[misc]
 
     def current_format(self) -> str:
         """Return the requested output format."""
-        return cast(str, self._format_combo.currentText())
+        return self._format_combo.currentText()
 
     def silence_milliseconds(self) -> int:
         """Return the silence padding between chunks."""

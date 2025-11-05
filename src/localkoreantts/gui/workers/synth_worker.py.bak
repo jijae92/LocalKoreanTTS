@@ -14,7 +14,7 @@ from ..pipeline import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing helper
-    from PySide6.QtCore import QObject, QThread, Signal, Slot
+    from PySide6.QtCore import QObject, Signal
 
     class SynthWorker(QObject):
         progress: Signal
@@ -25,19 +25,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing helper
         cancelled: Signal
         log: Signal
 
-        def __init__(self, config: SynthJobConfig, parent: QObject | None = None) -> None: ...
+        def __init__(
+            self, config: SynthJobConfig, parent: QObject | None = None
+        ) -> None: ...
         def request_cancel(self) -> None: ...
-        @Slot()
-        def start(self) -> None: ...
-
-    def start_synth_worker(
-        config: SynthJobConfig, parent: QObject | None = None
-    ) -> tuple[QThread, SynthWorker]: ...
+        def run(self) -> None: ...
 
 else:
     _IMPORT_ERROR: BaseException | None = None
-    try:
-        from PySide6.QtCore import QMetaObject, QObject, Qt, Signal, Q_ARG, Slot
+    try:  # pragma: no cover - optional dependency
+        from PySide6.QtCore import QMetaObject, QObject, Qt, Signal, Q_ARG
     except ImportError as exc:  # pragma: no cover - optional dependency
         _IMPORT_ERROR = exc
 
@@ -54,8 +51,7 @@ else:
                     "PySide6 is required to use SynthWorker."
                 ) from _IMPORT_ERROR
 
-            @Slot()
-            def start(self) -> None:  # pragma: no cover - defensive
+            def run(self) -> None:  # pragma: no cover - defensive
                 raise RuntimeError(
                     "PySide6 is required to use SynthWorker."
                 ) from _IMPORT_ERROR
@@ -86,8 +82,7 @@ else:
                 """Signal the worker to cancel."""
                 self._cancelled = True
 
-            @Slot()
-            def start(self) -> None:
+            def run(self) -> None:
                 """Execute the pipeline and emit Qt signals."""
                 start_time = time.time()
                 utils.LOGGER.info(
@@ -97,21 +92,21 @@ else:
                 def _on_progress(done: int, total: int) -> None:
                     elapsed = max(time.time() - start_time, 0.0)
                     percent = int((done / total) * 100) if total else 100
-                    QMetaObject.invokeMethod(self, "progress", Qt.ConnectionType.QueuedConnection, Q_ARG(int, percent))
+                    QMetaObject.invokeMethod(self.progress, "emit", Qt.ConnectionType.QueuedConnection, Q_ARG(int, percent))
                     if total:
                         remaining = max(total - done, 0)
                         eta = 0.0
                         if done:
                             estimated_total = (elapsed / done) * total
                             eta = max(estimated_total - elapsed, 0.0)
-                        QMetaObject.invokeMethod(self, "stage", Qt.ConnectionType.QueuedConnection, Q_ARG(str, f"progress:{done}/{total}:remaining={remaining}:eta={eta:.1f}s"))
+                        QMetaObject.invokeMethod(self.stage, "emit", Qt.ConnectionType.QueuedConnection, Q_ARG(str, f"progress:{done}/{total}:remaining={remaining}:eta={eta:.1f}s"))
 
                 hooks = PipelineHooks(
                     should_cancel=lambda: self._cancelled,
                     on_progress=_on_progress,
-                    on_log=lambda msg: QMetaObject.invokeMethod(self, "log", Qt.ConnectionType.QueuedConnection, Q_ARG(str, msg)),
-                    on_stage=lambda msg: QMetaObject.invokeMethod(self, "stage", Qt.ConnectionType.QueuedConnection, Q_ARG(str, msg)),
-                    on_chunk_done=lambda done, total: QMetaObject.invokeMethod(self, "chunk_done", Qt.ConnectionType.QueuedConnection, Q_ARG(int, done), Q_ARG(int, total)),
+                    on_log=lambda msg: QMetaObject.invokeMethod(self.log, "emit", Qt.ConnectionType.QueuedConnection, Q_ARG(str, msg)),
+                    on_stage=lambda msg: QMetaObject.invokeMethod(self.stage, "emit", Qt.ConnectionType.QueuedConnection, Q_ARG(str, msg)),
+                    on_chunk_done=lambda done, total: QMetaObject.invokeMethod(self.chunk_done, "emit", Qt.ConnectionType.QueuedConnection, Q_ARG(int, done), Q_ARG(int, total)),
                 )
 
                 try:
@@ -120,40 +115,16 @@ else:
                     utils.LOGGER.info(
                         "GUI job cancelled", extra={"job_id": self._config.job_id}
                     )
-                    QMetaObject.invokeMethod(self, "cancelled", Qt.ConnectionType.QueuedConnection)
+                    QMetaObject.invokeMethod(self.cancelled, "emit", Qt.ConnectionType.QueuedConnection)
                 except Exception as exc:  # pragma: no cover - defensive
                     utils.LOGGER.exception(
                         "GUI job failed", extra={"job_id": self._config.job_id}
                     )
-                    QMetaObject.invokeMethod(self, "error", Qt.ConnectionType.QueuedConnection, Q_ARG(str, str(exc)))
+                    QMetaObject.invokeMethod(self.error, "emit", Qt.ConnectionType.QueuedConnection, Q_ARG(str, str(exc)))
                 else:
                     utils.LOGGER.info(
                         "GUI job completed", extra={"job_id": self._config.job_id}
                     )
-                    QMetaObject.invokeMethod(self, "finished", Qt.ConnectionType.QueuedConnection, Q_ARG(str, str(result.output_path)))
+                    QMetaObject.invokeMethod(self.finished, "emit", Qt.ConnectionType.QueuedConnection, Q_ARG(str, str(result.output_path)))
                 finally:
                     self._cancelled = False
-
-        def start_synth_worker(
-            config: SynthJobConfig, parent: QObject | None = None
-        ) -> tuple[QThread, SynthWorker]:
-            """Instantiate a worker, move it to a thread, and start processing."""
-            thread = QThread()
-            worker = SynthWorker(config, parent)
-            worker.moveToThread(thread)
-            thread.started.connect(worker.start)
-
-            def _cleanup() -> None:
-                thread.quit()
-
-            worker.finished.connect(_cleanup)
-            worker.error.connect(_cleanup)
-            worker.cancelled.connect(_cleanup)
-
-            worker.finished.connect(worker.deleteLater)
-            worker.error.connect(worker.deleteLater)
-            worker.cancelled.connect(worker.deleteLater)
-            thread.finished.connect(thread.deleteLater)
-
-            thread.start()
-            return thread, worker

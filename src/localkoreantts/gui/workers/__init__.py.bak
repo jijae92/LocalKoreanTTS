@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..pipeline import JobCancelled, PipelineHooks, SynthJobConfig, SynthResult
-from .synth_worker import SynthWorker, start_synth_worker
+from .synth_worker import SynthWorker
 
 __all__ = [
     "JobCancelled",
@@ -10,5 +10,4 @@ __all__ = [
     "SynthJobConfig",
     "SynthResult",
     "SynthWorker",
-    "start_synth_worker",
 ]

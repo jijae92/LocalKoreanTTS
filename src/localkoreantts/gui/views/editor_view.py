@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import Signal  # type: ignore[import-not-found]
-from PySide6.QtWidgets import (  # type: ignore[import-not-found]
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (  # type: ignore[import-not-found]
 )
 
 
-class EditorView(QWidget):  # type: ignore[misc]
+class EditorView(QWidget):
     """Widget providing a markdown/text editor."""
 
     text_changed = Signal(str)
@@ -34,7 +34,7 @@ class EditorView(QWidget):  # type: ignore[misc]
 
     def current_text(self) -> str:
         """Return the current editor contents."""
-        return cast(str, self._editor.toPlainText())
+        return self._editor.toPlainText()
 
     def set_text(self, value: str) -> None:
         """Replace the editor contents."""
@@ -48,7 +48,7 @@ class EditorView(QWidget):  # type: ignore[misc]
         self.text_changed.emit(self.current_text())
 
 
-class FileInputView(QWidget):  # type: ignore[misc]
+class FileInputView(QWidget):
     """Widget used to select an input text file."""
 
     file_changed = Signal(Path)

@@ -1,0 +1,126 @@
+"""Core synthesis engine for Local Korean TTS."""
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Optional
+
+from . import utils
+from .cache import CacheManager
+from .pii import scrub
+
+DEFAULT_MODEL_PATH = "~/.local/share/localkoreantts/model"
+DEFAULT_SAMPLE_RATE = 22_050
+DEFAULT_SPEED = 1.0
+DEFAULT_VOICE = "standard"
+
+
+@dataclass(frozen=True)
+class SynthesisRequest:
+    """Inputs required to create a synthesized utterance."""
+
+    text: str
+    voice: str = DEFAULT_VOICE
+    sample_rate: Optional[int] = None
+    speed: Optional[float] = None
+    output_path: Optional[Path] = None
+    dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class SynthesisResult:
+    """Resulting artefact for a synthesis request."""
+
+    request: SynthesisRequest
+    output_path: Path
+    from_cache: bool
+
+
+class TextToSpeechEngine:
+    """High-level driver that orchestrates synthesis and caching."""
+
+    def __init__(self, cache: Optional[CacheManager] = None) -> None:
+        self._cache = cache or CacheManager()
+        self._model_path = utils.get_env_path("LK_TTS_MODEL_PATH", DEFAULT_MODEL_PATH)
+        self._ffmpeg_bin = utils.get_env_str("LK_TTS_FFMPEG_BIN", "ffmpeg")
+        self._default_sample_rate = int(
+            utils.get_env_float("LK_TTS_SAMPLE_RATE", float(DEFAULT_SAMPLE_RATE))
+        )
+        self._default_speed = utils.get_env_float("LK_TTS_SPEED", DEFAULT_SPEED)
+
+    @property
+    def model_path(self) -> Path:
+        """Path to the local model checkpoint."""
+        return self._model_path
+
+    @property
+    def ffmpeg_bin(self) -> str:
+        """Configured ffmpeg binary."""
+        return self._ffmpeg_bin
+
+    def synthesize(self, request: SynthesisRequest) -> SynthesisResult:
+        """Return synthesized audio for the provided request."""
+        normalized = self._normalize_request(request)
+        cache_key = self._cache.build_key(
+            text=normalized.text,
+            voice=normalized.voice,
+            speed=normalized.speed,
+            sample_rate=normalized.sample_rate,
+        )
+        utils.LOGGER.debug("Synth request", extra={"key": cache_key})
+        if not normalized.dry_run:
+            cached = self._cache.get(cache_key)
+            if cached:
+                target_path = self._handle_target_path(normalized, cached.payload_path)
+                return SynthesisResult(request=normalized, output_path=target_path, from_cache=True)
+
+        if normalized.dry_run:
+            placeholder_path = normalized.output_path or (self._cache.base_dir / "dry_run" / f"{cache_key}.txt")
+            return SynthesisResult(request=normalized, output_path=placeholder_path, from_cache=False)
+
+        safe_text = scrub(normalized.text)
+        rendered = self._render_placeholder(safe_text, normalized)
+        record = self._cache.set(cache_key, rendered)
+        target_path = self._handle_target_path(normalized, record.payload_path, contents=rendered)
+        return SynthesisResult(request=normalized, output_path=target_path, from_cache=False)
+
+    def _normalize_request(self, request: SynthesisRequest) -> SynthesisRequest:
+        if not request.text.strip():
+            raise ValueError("Input text must not be empty.")
+        sample_rate = request.sample_rate or self._default_sample_rate
+        speed = request.speed if request.speed is not None else self._default_speed
+        if speed <= 0:
+            raise ValueError("Speed must be greater than zero.")
+        normalized = replace(
+            request,
+            sample_rate=sample_rate,
+            speed=speed,
+            voice=request.voice or DEFAULT_VOICE,
+        )
+        return normalized
+
+    def _handle_target_path(
+        self,
+        request: SynthesisRequest,
+        cached_path: Path,
+        *,
+        contents: Optional[str] = None,
+    ) -> Path:
+        if request.output_path:
+            request.output_path.parent.mkdir(parents=True, exist_ok=True)
+            if contents is None:
+                contents = cached_path.read_text(encoding="utf-8")
+            request.output_path.write_text(contents, encoding="utf-8")
+            return request.output_path
+        return cached_path
+
+    def _render_placeholder(self, text: str, request: SynthesisRequest) -> str:
+        return (
+            "# Local Korean TTS placeholder\n"
+            f"model={self.model_path}\n"
+            f"ffmpeg={self.ffmpeg_bin}\n"
+            f"voice={request.voice}\n"
+            f"sample_rate={request.sample_rate}\n"
+            f"speed={request.speed}\n\n"
+            f"{text}\n"
+        )

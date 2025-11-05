@@ -1,0 +1,79 @@
+"""Utility helpers for Local Korean TTS."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any, Optional
+
+LOGGER = logging.getLogger("localkoreantts")
+
+
+def configure_logging(verbose: bool = False) -> None:
+    """Configure the package-wide logger.
+
+    Parameters
+    ----------
+    verbose:
+        When ``True`` the global logger emits DEBUG level messages. Otherwise INFO.
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    LOGGER.debug("Logger configured", extra={"verbose": verbose})
+
+
+def get_env_path(name: str, default: str) -> Path:
+    """Return a POSIX path from an environment variable or default."""
+    value = os.getenv(name, default)
+    path = Path(value).expanduser().resolve()
+    LOGGER.debug("Resolved path env", extra={"name": name, "path": str(path)})
+    return path
+
+
+def get_env_str(name: str, default: str) -> str:
+    """Return a sanitized string environment variable value."""
+    value = os.getenv(name, default).strip()
+    LOGGER.debug("Resolved str env", extra={"name": name})
+    return value
+
+
+def get_env_float(name: str, default: float) -> float:
+    """Return a float environment variable value with fallback."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        LOGGER.debug("No float env override", extra={"name": name})
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:  # pragma: no cover - defensive branch
+        raise ValueError(f"Environment variable {name} must be a float") from exc
+    LOGGER.debug("Resolved float env", extra={"name": name, "value": value})
+    return value
+
+
+def ensure_directory(path: Path) -> Path:
+    """Ensure that a directory exists and return its path."""
+    path.mkdir(parents=True, exist_ok=True)
+    LOGGER.debug("Ensured directory", extra={"path": str(path)})
+    return path
+
+
+def read_text_source(text: Optional[str], input_path: Optional[Path]) -> str:
+    """Return text either from a literal argument or a file path."""
+    if text and input_path:
+        raise ValueError("Provide either `text` or `input_path`, not both.")
+    if text:
+        return text
+    if input_path:
+        content = input_path.read_text(encoding="utf-8")
+        LOGGER.debug(
+            "Loaded input text", extra={"bytes": len(content.encode("utf-8"))}
+        )
+        return content
+    raise ValueError("Either `text` or `input_path` must be provided.")
+
+
+def json_dump(data: Any) -> str:
+    """Return a JSON payload with consistent formatting."""
+    return json.dumps(data, ensure_ascii=False, indent=2)

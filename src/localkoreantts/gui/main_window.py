@@ -1,5 +1,7 @@
 from __future__ import annotations
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QLabel
+
+from PySide6.QtWidgets import QLabel, QMainWindow, QVBoxLayout, QWidget
+
 
 class MainWindow(QMainWindow):
     """Minimal main window for LocalKoreanTTS GUI."""

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from enum import Enum
 
-from PySide6.QtCore import Qt  # type: ignore[import-not-found]
-from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem  # type: ignore[import-not-found]
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
 
 
 class JobStatus(Enum):
@@ -30,7 +30,7 @@ class JobState:
         self.result_path: str | None = None
 
 
-class JobsView(QTreeWidget):  # type: ignore[misc]
+class JobsView(QTreeWidget):
     """Tree widget listing queued synthesis jobs."""
 
     def __init__(self, parent: QTreeWidget | None = None) -> None:
@@ -46,8 +46,8 @@ class JobsView(QTreeWidget):  # type: ignore[misc]
             item = self._items[state.job_id]
         else:
             item = QTreeWidgetItem(self)
-            item.setTextAlignment(0, Qt.AlignLeft | Qt.AlignVCenter)
-            item.setTextAlignment(1, Qt.AlignCenter)
+            item.setTextAlignment(0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
             self._items[state.job_id] = item
 
         item.setText(0, f"#{state.job_id} {state.description}")

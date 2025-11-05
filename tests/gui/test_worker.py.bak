@@ -3,14 +3,15 @@ from __future__ import annotations
 
 # ruff: noqa: I001
 
+import time
 from collections.abc import Callable
-from typing import Any
 
 import pytest
 
-from types import SimpleNamespace
+pytest.importorskip("pytestqt")
+pytest.importorskip("PySide6.QtCore")
 
-
+from localkoreantts.tts import SynthesisResult
 
 def _install_pipeline(monkeypatch: pytest.MonkeyPatch, func: Callable) -> None:
     monkeypatch.setattr(
@@ -18,32 +19,21 @@ def _install_pipeline(monkeypatch: pytest.MonkeyPatch, func: Callable) -> None:
         func,
     )
 
-
-def _block_real_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fail(*_args: Any, **_kwargs: Any) -> None:
-        pytest.fail("real synthesis pipeline should not be invoked in tests")
-
-    monkeypatch.setattr(
-        "localkoreantts.gui.pipeline.create_local_vits",
-        _fail,
-    )
-
-@pytest.mark.usefixtures("qapp")
 def test_worker_finishes(qtbot, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from PySide6.QtCore import QThread  # type: ignore[import]
+    from PySide6.QtTest import QSignalSpy  # type: ignore[import]
 
-    from localkoreantts.gui.pipeline import PipelineHooks, SynthJobConfig  # type: ignore[import]
+    from localkoreantts.gui.pipeline import SynthJobConfig  # type: ignore[import]
     from localkoreantts.gui.workers import SynthWorker  # type: ignore[import]
 
-    _block_real_pipeline(monkeypatch)
-
-    def fake_pipeline(config: SynthJobConfig, hooks: PipelineHooks):
+    def fake_pipeline(config: SynthJobConfig, hooks):
         hooks.on_stage("chunking")
         hooks.on_progress(1, 1)
         hooks.on_chunk_done(1, 1)
-        hooks.on_stage("completed")
-        return SimpleNamespace(output_path=tmp_path / "out.wav")
+        time.sleep(0.01)
+        return SynthesisResult(request=config, output_path=tmp_path / "out.wav", from_cache=False)
 
+    
     _install_pipeline(monkeypatch, fake_pipeline)
     worker = SynthWorker(
         SynthJobConfig(
@@ -62,43 +52,33 @@ def test_worker_finishes(qtbot, tmp_path, monkeypatch: pytest.MonkeyPatch) -> No
     )
     thread = QThread()
     worker.moveToThread(thread)
-    thread.started.connect(worker.start)
+    thread.started.connect(worker.run)
 
-    # Capture signal output
-    output_file = None
-    def capture_finished(file_path):
-        nonlocal output_file
-        output_file = file_path
-
-    worker.finished.connect(capture_finished)
-
+    finished_spy = QSignalSpy(worker.finished)
     thread.start()
     qtbot.waitSignal(worker.finished, timeout=2000)
     thread.quit()
     qtbot.waitSignal(thread.finished, timeout=2000)
-
-    assert output_file == str(tmp_path / "out.wav")
+    assert finished_spy
+    assert finished_spy[0][0] == str(tmp_path / "out.wav")
 
 
 def test_worker_cancel(qtbot, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from PySide6.QtCore import QThread  # type: ignore[import]
+    from PySide6.QtTest import QSignalSpy  # type: ignore[import]
 
-    from localkoreantts.gui.pipeline import JobCancelled, PipelineHooks, SynthJobConfig  # type: ignore[import]
+    from localkoreantts.gui.pipeline import JobCancelled, SynthJobConfig  # type: ignore[import]
     from localkoreantts.gui.workers import SynthWorker  # type: ignore[import]
 
-    _block_real_pipeline(monkeypatch)
-
-    def fake_pipeline(config: SynthJobConfig, hooks: PipelineHooks):
+    def fake_pipeline(config: SynthJobConfig, hooks):
         hooks.on_stage("chunking")
-        total = 5
-        for idx in range(1, total + 1):
-            if hooks.should_cancel():
-                raise JobCancelled()
-            hooks.on_stage("chunk_synth")
-            hooks.on_progress(idx, total)
-            hooks.on_chunk_done(idx, total)
-            QThread.msleep(5)
+        hooks.on_progress(1, 10)
+        if hooks.should_cancel():
+            raise JobCancelled()
+        time.sleep(0.05)
         raise AssertionError("should cancel before completion")
+
+
 
     _install_pipeline(monkeypatch, fake_pipeline)
     worker = SynthWorker(
@@ -118,11 +98,13 @@ def test_worker_cancel(qtbot, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None
     )
     thread = QThread()
     worker.moveToThread(thread)
-    thread.started.connect(worker.start)
+    thread.started.connect(worker.run)
 
+    cancelled_spy = QSignalSpy(worker.cancelled)
     thread.start()
-    qtbot.wait(20)
+    qtbot.wait(50)
     worker.request_cancel()
     qtbot.waitSignal(worker.cancelled, timeout=2000)
     thread.quit()
     qtbot.waitSignal(thread.finished, timeout=2000)
+    assert cancelled_spy

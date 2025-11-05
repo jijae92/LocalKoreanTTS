@@ -1,0 +1,92 @@
+"""Command line interface for Local Korean TTS."""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+from typing import List, Optional
+
+from . import utils
+from .tts import DEFAULT_VOICE, SynthesisRequest, TextToSpeechEngine
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Return the CLI argument parser."""
+    parser = argparse.ArgumentParser(description="Local Korean TTS placeholder CLI")
+    parser.add_argument("--text", help="Raw text to synthesize")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        help="Path to a UTF-8 text file containing synthesis input",
+    )
+    parser.add_argument("--output", type=Path, help="Desired output path")
+    parser.add_argument("--voice", default=DEFAULT_VOICE, help="Voice profile name")
+    parser.add_argument(
+        "--sample-rate",
+        type=int,
+        dest="sample_rate",
+        help="Override output sample rate (Hz)",
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=None,
+        help="Playback speed multiplier",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Do not write files")
+    parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logs")
+    parser.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="Emit structured JSON output",
+    )
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """CLI entry point."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    utils.configure_logging(verbose=args.verbose)
+    engine = TextToSpeechEngine()
+
+    try:
+        text = utils.read_text_source(args.text, args.input)
+        request = SynthesisRequest(
+            text=text,
+            voice=args.voice,
+            sample_rate=args.sample_rate,
+            speed=args.speed,
+            output_path=args.output,
+            dry_run=args.dry_run,
+        )
+        result = engine.synthesize(request)
+    except Exception as exc:  # pragma: no cover - defensive catch
+        payload = {
+            "status": "error",
+            "error": str(exc),
+            "hint": "Validate input text and environment configuration.",
+        }
+        message = utils.json_dump(payload) if args.as_json else (
+            f"Error: {exc}. Next: Validate input arguments and environment."
+        )
+        stream = sys.stdout if args.as_json else sys.stderr
+        stream.write(f"{message}\n")
+        return 2
+
+    payload = {
+        "status": "ok",
+        "output": str(result.output_path),
+        "from_cache": result.from_cache,
+    }
+    if args.as_json:
+        sys.stdout.write(f"{utils.json_dump(payload)}\n")
+    else:
+        origin = "cache" if result.from_cache else "synth"
+        sys.stdout.write(f"Synthesis ready at {result.output_path} ({origin})\n")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

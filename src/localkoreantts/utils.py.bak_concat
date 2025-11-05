@@ -1,0 +1,236 @@
+"""Utility helpers for Local Korean TTS."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any, List, Optional
+
+LOGGER = logging.getLogger("localkoreantts")
+
+
+def configure_logging(verbose: bool = False) -> None:
+    """Configure the package-wide logger.
+
+    Parameters
+    ----------
+    verbose:
+        When ``True`` the global logger emits DEBUG level messages. Otherwise INFO.
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    LOGGER.setLevel(level)
+    LOGGER.debug("Logger configured", extra={"verbose": verbose})
+
+
+def get_env_path(name: str, default: str) -> Path:
+    """Return a POSIX path from an environment variable or default."""
+    value = os.getenv(name, default)
+    path = Path(value).expanduser().resolve()
+    LOGGER.debug("Resolved path env", extra={"name": name, "path": str(path)})
+    return path
+
+
+def get_env_str(name: str, default: str) -> str:
+    """Return a sanitized string environment variable value."""
+    value = os.getenv(name, default).strip()
+    LOGGER.debug("Resolved str env", extra={"name": name})
+    return value
+
+
+def get_env_float(name: str, default: float) -> float:
+    """Return a float environment variable value with fallback."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        LOGGER.debug("No float env override", extra={"name": name})
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:  # pragma: no cover - defensive branch
+        raise ValueError(f"Environment variable {name} must be a float") from exc
+    LOGGER.debug("Resolved float env", extra={"name": name, "value": value})
+    return value
+
+
+def ensure_directory(path: Path) -> Path:
+    """Ensure that a directory exists and return its path."""
+    path.mkdir(parents=True, exist_ok=True)
+    LOGGER.debug("Ensured directory", extra={"path": str(path)})
+    return path
+
+
+def read_text_source(text: Optional[str], input_path: Optional[Path]) -> str:
+    """Return text either from a literal argument or a file path."""
+    if text and input_path:
+        raise ValueError("Provide either `text` or `input_path`, not both.")
+    if text:
+        return text
+    if input_path:
+        content = input_path.read_text(encoding="utf-8")
+        LOGGER.debug(
+            "Loaded input text", extra={"bytes": len(content.encode("utf-8"))}
+        )
+        return content
+    raise ValueError("Either `text` or `input_path` must be provided.")
+
+
+def json_dump(data: Any) -> str:
+    """Return a JSON payload with consistent formatting."""
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def chunk_text(
+    text: str,
+    max_chars: int = 3500,
+    *,
+    prefer_sentence_boundary: bool = True,
+    overlap_chars: int = 40,
+) -> List[str]:
+    """Split text into overlapping chunks respecting sentence boundaries."""
+
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive.")
+    if overlap_chars < 0:
+        raise ValueError("overlap_chars must be zero or positive.")
+    if not text:
+        return []
+
+    effective_overlap = 0
+    if max_chars > 1 and overlap_chars:
+        effective_overlap = min(overlap_chars, max_chars // 2 or 1)
+
+    tokens = _tokenize_text(text, prefer_sentence_boundary)
+
+    chunks: List[str] = []
+    current: str = ""
+    has_new_content = False
+
+    def start_new_chunk() -> None:
+        nonlocal current, has_new_content
+        if current:
+            chunks.append(current)
+        current = ""
+        has_new_content = False
+
+    def rollover_with_overlap() -> None:
+        nonlocal current, has_new_content
+        tail = current[-effective_overlap:] if effective_overlap and current else ""
+        start_new_chunk()
+        current = tail
+        has_new_content = False
+
+    for token in tokens:
+        remaining = token
+        if not remaining:
+            continue
+        if len(remaining) <= max_chars and current and len(current) + len(remaining) > max_chars:
+            rollover_with_overlap()
+        while remaining:
+            available = max_chars - len(current)
+            if available <= 0:
+                rollover_with_overlap()
+                available = max_chars - len(current)
+                if available <= 0:
+                    current = current[-max_chars:]
+                    available = max_chars - len(current)
+            take = min(len(remaining), available if available > 0 else len(remaining))
+            if take == 0:
+                start_new_chunk()
+                continue
+            current += remaining[:take]
+            has_new_content = True
+            remaining = remaining[take:]
+            if len(current) >= max_chars:
+                rollover_with_overlap()
+
+    if current and has_new_content:
+        chunks.append(current)
+
+    return chunks
+
+
+def _tokenize_text(text: str, prefer_sentence_boundary: bool) -> List[str]:
+    segments = _split_markdown_segments(text)
+    tokens: List[str] = []
+    for segment, is_code_block in segments:
+        if is_code_block:
+            tokens.append(segment)
+        elif prefer_sentence_boundary:
+            tokens.extend(_split_sentences(segment))
+        else:
+            tokens.append(segment)
+    return tokens if tokens else [text]
+
+
+def _split_markdown_segments(text: str) -> List[tuple[str, bool]]:
+    segments: List[tuple[str, bool]] = []
+    buffer: List[str] = []
+    in_code = False
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            if in_code:
+                buffer.append(line)
+                segments.append(("".join(buffer), True))
+                buffer = []
+                in_code = False
+            else:
+                if buffer:
+                    segments.append(("".join(buffer), False))
+                    buffer = []
+                buffer.append(line)
+                in_code = True
+            continue
+
+        buffer.append(line)
+
+    if buffer:
+        segments.append(("".join(buffer), in_code))
+
+    return segments or [(text, False)]
+
+
+def _split_sentences(segment: str) -> List[str]:
+    if not segment:
+        return []
+
+    sentences: List[str] = []
+    start = 0
+    length = len(segment)
+    i = 0
+
+    while i < length:
+        char = segment[i]
+
+        if char in ".!?":
+            i += 1
+            while i < length and segment[i].isspace():
+                if segment[i] == "\n":
+                    newline_start = i
+                    while i < length and segment[i] == "\n":
+                        i += 1
+                    if i - newline_start >= 2:
+                        break
+                    continue
+                i += 1
+            sentences.append(segment[start:i])
+            start = i
+            continue
+
+        if char == "\n":
+            newline_start = i
+            while i < length and segment[i] == "\n":
+                i += 1
+            if i - newline_start >= 2:
+                sentences.append(segment[start:i])
+                start = i
+            continue
+
+        i += 1
+
+    if start < length:
+        sentences.append(segment[start:])
+
+    return [sentence for sentence in sentences if sentence]

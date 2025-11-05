@@ -1,0 +1,20 @@
+"""Shim package to expose src/localkoreantts without installation."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_SRC_PARENT = Path(__file__).resolve().parent.parent / "src"
+_SRC_STR = str(_SRC_PARENT)
+if _SRC_STR not in sys.path:
+    sys.path.insert(0, _SRC_STR)
+
+sys.modules.pop(__name__, None)
+_module = __import__(__name__)
+
+# Ensure the real module is registered under the package name.
+sys.modules[__name__] = _module
+
+# Mirror public attributes from the actual package.
+for _name, _value in _module.__dict__.items():
+    globals()[_name] = _value

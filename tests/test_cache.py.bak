@@ -1,0 +1,125 @@
+"""Tests for cache manager."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from localkoreantts.cache import CacheManager, make_cache_key
+
+
+def test_store_and_retrieve(tmp_path: Path) -> None:
+    manager = CacheManager(cache_dir=tmp_path)
+    key = make_cache_key(
+        model_path=str(tmp_path / "model.pth"),
+        text="안녕하세요",
+        speed=1.0,
+        sample_rate=22050,
+        format="wav",
+    )
+    payload = b"RIFFTEST"
+    metadata = {
+        "model_path": "model.pth",
+        "sample_rate": 22050,
+        "speed": 1.0,
+        "format": "wav",
+    }
+    stored_path = Path(manager.store(key, payload, metadata))
+    assert stored_path.exists()
+
+    cached_path = manager.get_cached_path(key)
+    assert cached_path is not None
+    assert Path(cached_path) == stored_path
+
+    meta_path = stored_path.with_suffix(".json")
+    metadata_record = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert manager.verify_cached_file(
+        cached_path, metadata_record["payload_hash"]
+    )
+
+
+def test_cache_key_changes_when_speed_changes(tmp_path: Path) -> None:
+    key_a = make_cache_key(
+        model_path=str(tmp_path / "model.pth"),
+        text="동일 텍스트",
+        speed=1.0,
+        sample_rate=24000,
+        format="wav",
+    )
+    key_b = make_cache_key(
+        model_path=str(tmp_path / "model.pth"),
+        text="동일 텍스트",
+        speed=1.25,
+        sample_rate=24000,
+        format="wav",
+    )
+    assert key_a != key_b
+
+
+def test_get_cached_path_handles_corruption(tmp_path: Path) -> None:
+    manager = CacheManager(cache_dir=tmp_path)
+    key = make_cache_key("model", "chunk", 1.0, 22_050, "wav")
+    payload = b"RIFFtest"
+    metadata = {"format": "wav", "sample_rate": 22_050, "speed": 1.0}
+    path = Path(manager.store(key, payload, metadata))
+    # Corrupt the payload by truncating
+    path.write_bytes(b"bad")
+
+    cached = manager.get_cached_path(key)
+    assert cached is None
+    assert not path.exists()
+
+
+def test_store_requires_bytes(tmp_path: Path) -> None:
+    manager = CacheManager(cache_dir=tmp_path)
+    with pytest.raises(TypeError):
+        manager.store("key", "not-bytes", {"format": "wav"})  # type: ignore[arg-type]
+
+
+def test_get_cached_path_missing_metadata(tmp_path: Path) -> None:
+    manager = CacheManager(cache_dir=tmp_path)
+    key = make_cache_key("model", "chunk", 1.0, 22_050, "wav")
+    base_dir = manager.base_dir / key[:2]
+    base_dir.mkdir(parents=True, exist_ok=True)
+    (base_dir / f"{key}.wav").write_bytes(b"RIFF")
+    assert manager.get_cached_path(key) is None
+
+
+def test_get_cached_path_missing_payload(tmp_path: Path) -> None:
+    manager = CacheManager(cache_dir=tmp_path)
+    key = make_cache_key("model", "chunk", 1.0, 22_050, "wav")
+    payload = b"RIFFtest"
+    metadata = {"format": "wav", "sample_rate": 22_050, "speed": 1.0}
+    path = Path(manager.store(key, payload, metadata))
+    path.unlink()
+    assert manager.get_cached_path(key) is None
+
+
+def test_get_returns_none_for_missing(tmp_path: Path) -> None:
+    manager = CacheManager(cache_dir=tmp_path)
+    assert manager.get("missing") is None
+
+
+def test_cache_get_returns_record(tmp_path: Path) -> None:
+    manager = CacheManager(cache_dir=tmp_path)
+    key = manager.build_key(text="hello", voice="voice", speed=1.0, sample_rate=22050)
+    record = manager.set(key, "payload")
+    assert record.payload_path.read_text(encoding="utf-8") == "payload"
+    cached = manager.get(key)
+    assert cached is not None
+    assert cached.payload_path.exists()
+
+
+def test_cache_set_stores_textual_payload(tmp_path: Path) -> None:
+    manager = CacheManager(cache_dir=tmp_path)
+    key = manager.build_key(text="text", voice="voice", speed=1.0, sample_rate=22050)
+    record = manager.set(key, "contents", extension=".txt")
+    assert record.payload_path.read_text(encoding="utf-8") == "contents"
+
+
+def test_safe_unlink_removes_file(tmp_path: Path) -> None:
+    path = tmp_path / "artifact.bin"
+    path.write_text("data", encoding="utf-8")
+    CacheManager._safe_unlink(path)
+    assert not path.exists()

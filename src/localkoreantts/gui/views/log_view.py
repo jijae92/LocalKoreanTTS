@@ -3,13 +3,13 @@ from __future__ import annotations
 
 # ruff: noqa: I001
 
-from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor  # type: ignore[import-not-found]
-from PySide6.QtWidgets import QPlainTextEdit  # type: ignore[import-not-found]
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtWidgets import QPlainTextEdit
 
 from ... import pii
 
 
-class LogView(QPlainTextEdit):  # type: ignore[misc]
+class LogView(QPlainTextEdit):
     """Read-only log pane with basic level colouring."""
 
     COLOR_MAP = {
@@ -30,7 +30,7 @@ class LogView(QPlainTextEdit):  # type: ignore[misc]
         """Append a log line with scrubbed text and colour."""
         sanitized = pii.scrub(message)
         cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.End)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
         fmt = QTextCharFormat()
         fmt.setForeground(self.COLOR_MAP.get(level.upper(), QColor("#FFFFFF")))
         cursor.insertText(f"[{level}] {sanitized}\n", fmt)

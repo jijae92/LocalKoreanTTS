@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Poetry
+        run: pip install poetry
+      - name: Install dependencies
+        run: poetry install
+      - name: Ruff
+        run: poetry run ruff check src tests
+      - name: Mypy
+        run: poetry run mypy --strict src
+      - name: Pytest with coverage
+        run: poetry run pytest --cov=src --cov-report=term-missing --cov-fail-under=80

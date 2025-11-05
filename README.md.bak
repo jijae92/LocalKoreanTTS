@@ -1,0 +1,38 @@
+# Local Korean TTS
+
+Local Korean TTS는 로컬 환경에서 한국어 음성 합성 파이프라인을 구성하기 위한 파이썬 프로젝트 골격입니다.
+
+## 요구 사항
+- Python 3.11
+- (선택) Poetry 또는 pip로 의존성 설치
+
+## 설치 및 실행
+```bash
+# 의존성 설치
+poetry install
+
+# CLI 실행 예시
+LK_TTS_CACHE_DIR=.cache poetry run python -m localkoreantts.cli --text "테스트" --output output.txt
+
+# JSON 출력
+LK_TTS_CACHE_DIR=.cache poetry run python -m localkoreantts.cli --text "테스트" --output output.txt --json
+```
+
+## 테스트
+```bash
+poetry run pytest
+poetry run ruff check src tests
+poetry run mypy --strict src
+poetry run coverage run -m pytest
+poetry run coverage report
+```
+
+## 환경 변수
+- `LK_TTS_MODEL_PATH`: 모델 파일 경로 (기본 `~/.local/share/localkoreantts/model`)
+- `LK_TTS_CACHE_DIR`: 캐시 디렉터리 (기본 `~/.cache/localkoreantts`)
+- `LK_TTS_FFMPEG_BIN`: ffmpeg 실행 파일 (기본 `ffmpeg`)
+- `LK_TTS_SAMPLE_RATE`: 기본 샘플레이트 (기본 `22050`)
+- `LK_TTS_SPEED`: 기본 재생 속도 (기본 `1.0`)
+
+## 라이선스
+프로젝트 초기 골격에는 라이선스가 포함되어 있지 않습니다. 필요에 따라 추가하세요.

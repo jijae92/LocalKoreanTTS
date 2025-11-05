@@ -1,0 +1,28 @@
+"""PII redaction helpers."""
+from __future__ import annotations
+
+import re
+from typing import Callable, Iterable
+
+# Basic patterns for digits and email addresses.
+_DIGIT_PATTERN = re.compile(r"\d")
+_EMAIL_PATTERN = re.compile(r"(?P<user>[^@\s]+)@(?P<domain>[^@\s]+)")
+
+
+def mask_digits(text: str, token: str = "*") -> str:
+    """Mask all digits within the provided text."""
+    return _DIGIT_PATTERN.sub(token, text)
+
+
+def mask_emails(text: str, token: str = "***@***") -> str:
+    """Mask email addresses with a constant token."""
+    return _EMAIL_PATTERN.sub(token, text)
+
+
+def scrub(text: str, extra_filters: Iterable[Callable[[str], str]] | None = None) -> str:
+    """Apply built-in and caller-provided PII filters."""
+    masked = mask_emails(mask_digits(text))
+    if extra_filters:
+        for filter_fn in extra_filters:
+            masked = filter_fn(masked)
+    return masked

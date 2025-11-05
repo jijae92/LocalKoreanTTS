@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
-from PySide6.QtCore import QCoreApplication, QLocale, QTranslator  # type: ignore[import]
-
+from PySide6.QtCore import (
+    QCoreApplication,
+    QLocale,
+    QTranslator,
+)
 
 AVAILABLE_LANGUAGES = {
     "ko-KR": "한국어",
@@ -17,7 +19,7 @@ class TranslatorManager:
     """Manage Qt translators for runtime language switching."""
 
     def __init__(self) -> None:
-        self._translator: Optional[QTranslator] = None
+        self._translator: QTranslator | None = None
         self._current_locale = QLocale.system().name()
 
     @property
@@ -28,7 +30,11 @@ class TranslatorManager:
         if locale_name not in AVAILABLE_LANGUAGES:
             return False
         translator = QTranslator()
-        qm_path = Path(__file__).resolve().parent / "resources" / f"i18n/{locale_name}.qm"
+        qm_path = (
+            Path(__file__).resolve().parent
+            / "resources"
+            / f"i18n/{locale_name}.qm"
+        )
         if not translator.load(str(qm_path)):
             return False
         if self._translator:

@@ -5,19 +5,19 @@ import io
 import wave
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable
 
 from . import utils
 from .cache import CacheManager, make_cache_key
 from .pii import scrub
 
-DEFAULT_MODEL_PATH = str(utils.default_model_path())
+DEFAULT_MODEL_PATH = "~/.local/share/localkoreantts/model"
 DEFAULT_SAMPLE_RATE = 22_050
 DEFAULT_SPEED = 1.0
 DEFAULT_VOICE = "standard"
 
 try:  # pragma: no cover - optional dependency
-    from TTS.api import TTS as _CoquiTTS  # type: ignore
+    from TTS.api import TTS as _CoquiTTS  # type: ignore[import]
 except ImportError:  # pragma: no cover - optional dependency
     _CoquiTTS = None
 
@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - optional dependency
 class ModelHandle(Protocol):
     """Protocol describing the minimal interface required from the VITS model."""
 
-    sample_rate: int | None
+    sample_rate: Optional[int]
 
     def synthesize(self, text: str, speed: float) -> Any:
         """Return either float numpy array data or raw WAV bytes."""
@@ -43,56 +43,32 @@ class _CoquiModelAdapter:
         return self._model.tts(text=text, speed=speed)
 
 
-def _ensure_coqui_dir(path: str | Path) -> Path:
-    p = Path(path).expanduser().resolve()
-    if not p.is_dir():
-        raise ValueError(f"LK_TTS_MODEL_PATH must be a directory, got: {p}")
-    if not (p / "config.json").exists():
-        raise FileNotFoundError(f"config.json not found under {p}")
-    # 가중치 후보: *.pth / *.pt
-    ckpts = list(p.glob("*.pth")) + list(p.glob("*.pt"))
-    if not ckpts:
-        raise FileNotFoundError(f"No checkpoint (*.pth|*.pt) under {p}")
-    return p
-
-
 def load_model(model_path: str) -> ModelHandle:
     """Load a Coqui TTS VITS model and return a compatible handle."""
     if _CoquiTTS is None:
         raise RuntimeError(
             "Coqui TTS package is not installed. Install it via `pip install TTS`."
         )
-    model_dir = _ensure_coqui_dir(model_path)
-    utils.LOGGER.info("Loading Coqui VITS model", extra={"model_path": str(model_dir)})
-    model = _CoquiTTS(model_path=str(model_dir))
+    utils.LOGGER.info("Loading Coqui VITS model", extra={"model_path": model_path})
+    model = _CoquiTTS(model_path=model_path)
     return _CoquiModelAdapter(model)
 
 
 class LocalVITS:
     """Lightweight wrapper around a Coqui VITS model that emits WAV files."""
 
-    def __init__(
-        self,
-        model_path: str,
-        sample_rate: int = 22_050,
-        ffmpeg_bin: str | None = None,
-    ) -> None:
+    def __init__(self, model_path: str, sample_rate: int = 22_050, ffmpeg_bin: str = "ffmpeg") -> None:
         if sample_rate <= 0:
             raise ValueError("sample_rate must be a positive integer.")
         self._model_path = model_path
         self._sample_rate = sample_rate
-        self._ffmpeg_bin = utils.resolve_ffmpeg_bin(ffmpeg_bin)
+        self._ffmpeg_bin = ffmpeg_bin
         self._model = load_model(model_path)
-        model_sample_rate = getattr(self._model, "sample_rate", None)
-        if isinstance(model_sample_rate, int | float):
-            self._sample_rate = int(model_sample_rate)
+        if getattr(self._model, "sample_rate", None):
+            self._sample_rate = int(self._model.sample_rate)  # type: ignore[assignment]
         utils.LOGGER.debug(
             "LocalVITS initialised",
-            extra={
-                "model_path": model_path,
-                "sample_rate": self._sample_rate,
-                "ffmpeg_bin": ffmpeg_bin,
-            },
+            extra={"model_path": model_path, "sample_rate": self._sample_rate, "ffmpeg_bin": ffmpeg_bin},
         )
 
     @property
@@ -116,14 +92,11 @@ class LocalVITS:
             raise ValueError("speed must be greater than zero.")
         wav_bytes = self.generate_wav_bytes(text=text, speed=speed)
         output_path = Path(out_path)
-        utils.atomic_write_bytes(output_path, wav_bytes)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(wav_bytes)
         utils.LOGGER.info(
             "Wrote synthesized audio",
-            extra={
-                "out_path": str(output_path),
-                "sample_rate": self._sample_rate,
-                "bytes": len(wav_bytes),
-            },
+            extra={"out_path": str(output_path), "sample_rate": self._sample_rate, "bytes": len(wav_bytes)},
         )
 
     def generate_wav_bytes(self, text: str, speed: float = 1.0) -> bytes:
@@ -144,19 +117,17 @@ class LocalVITS:
         def _flatten(values: Any) -> list[float]:
             if hasattr(values, "tolist"):
                 values = values.tolist()
-            if isinstance(values, bytes | bytearray):
+            if isinstance(values, (bytes, bytearray)):
                 raise RuntimeError("Expected numeric samples, not raw bytes.")
-            if isinstance(values, list | tuple):
+            if isinstance(values, (list, tuple)):
                 flattened: list[float] = []
                 for item in values:
                     flattened.extend(_flatten(item))
                 return flattened
             try:
                 return [float(values)]
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError(
-                    "Unsupported audio sample type for encoding."
-                ) from exc  # pragma: no cover - defensive branch
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive branch
+                raise RuntimeError("Unsupported audio sample type for encoding.") from exc
 
         flat_samples = _flatten(samples)
         if not flat_samples:
@@ -185,9 +156,9 @@ class SynthesisRequest:
 
     text: str
     voice: str = DEFAULT_VOICE
-    sample_rate: int | None = None
-    speed: float | None = None
-    output_path: Path | None = None
+    sample_rate: Optional[int] = None
+    speed: Optional[float] = None
+    output_path: Optional[Path] = None
     dry_run: bool = False
 
 
@@ -203,10 +174,10 @@ class SynthesisResult:
 class TextToSpeechEngine:
     """High-level driver that orchestrates synthesis and caching."""
 
-    def __init__(self, cache: CacheManager | None = None) -> None:
+    def __init__(self, cache: Optional[CacheManager] = None) -> None:
         self._cache = cache or CacheManager()
-        self._model_path = utils.resolve_model_path(None)
-        self._ffmpeg_bin = utils.resolve_ffmpeg_bin()
+        self._model_path = utils.get_env_path("LK_TTS_MODEL_PATH", DEFAULT_MODEL_PATH)
+        self._ffmpeg_bin = utils.get_env_str("LK_TTS_FFMPEG_BIN", "ffmpeg")
         self._default_sample_rate = int(
             utils.get_env_float("LK_TTS_SAMPLE_RATE", float(DEFAULT_SAMPLE_RATE))
         )
@@ -222,72 +193,38 @@ class TextToSpeechEngine:
         """Configured ffmpeg binary."""
         return self._ffmpeg_bin
 
-    @property
-    def default_sample_rate(self) -> int:
-        """Default sample rate applied when requests omit one."""
-        return self._default_sample_rate
-
-    @property
-    def default_speed(self) -> float:
-        """Default speed applied when requests omit one."""
-        return self._default_speed
-
     def synthesize(self, request: SynthesisRequest) -> SynthesisResult:
         """Return synthesized audio for the provided request."""
         normalized = self._normalize_request(request)
-        if normalized.speed is None or normalized.sample_rate is None:
-            raise AssertionError("Normalized request missing speed/sample_rate")
-        normalized_speed = float(normalized.speed)
-        normalized_sample_rate = int(normalized.sample_rate)
         cache_key = make_cache_key(
             model_path=str(self.model_path),
             text=normalized.text,
-            speed=normalized_speed,
-            sample_rate=normalized_sample_rate,
+            speed=normalized.speed,
+            sample_rate=normalized.sample_rate,
             format="txt",
         )
         utils.LOGGER.debug("Synth request", extra={"key": cache_key})
         if not normalized.dry_run:
             cached_path = self._cache.get_cached_path(cache_key)
             if cached_path:
-                target_path = self._handle_target_path(
-                    normalized, Path(cached_path)
-                )
-                return SynthesisResult(
-                    request=normalized,
-                    output_path=target_path,
-                    from_cache=True,
-                )
+                target_path = self._handle_target_path(normalized, Path(cached_path))
+                return SynthesisResult(request=normalized, output_path=target_path, from_cache=True)
 
         if normalized.dry_run:
-            placeholder_path = normalized.output_path or (
-                self._cache.base_dir / "dry_run" / f"{cache_key}.txt"
-            )
-            return SynthesisResult(
-                request=normalized,
-                output_path=placeholder_path,
-                from_cache=False,
-            )
+            placeholder_path = normalized.output_path or (self._cache.base_dir / "dry_run" / f"{cache_key}.txt")
+            return SynthesisResult(request=normalized, output_path=placeholder_path, from_cache=False)
 
         safe_text = scrub(normalized.text)
         rendered = self._render_placeholder(safe_text, normalized)
         metadata = {
             "model_path": str(self.model_path),
-            "sample_rate": normalized_sample_rate,
-            "speed": normalized_speed,
+            "sample_rate": normalized.sample_rate,
+            "speed": normalized.speed,
             "format": "txt",
         }
-        cache_path = Path(
-            self._cache.store(cache_key, rendered.encode("utf-8"), metadata)
-        )
-        target_path = self._handle_target_path(
-            normalized, cache_path, contents=rendered
-        )
-        return SynthesisResult(
-            request=normalized,
-            output_path=target_path,
-            from_cache=False,
-        )
+        cache_path = Path(self._cache.store(cache_key, rendered.encode("utf-8"), metadata))
+        target_path = self._handle_target_path(normalized, cache_path, contents=rendered)
+        return SynthesisResult(request=normalized, output_path=target_path, from_cache=False)
 
     def _normalize_request(self, request: SynthesisRequest) -> SynthesisRequest:
         if not request.text.strip():
@@ -309,13 +246,13 @@ class TextToSpeechEngine:
         request: SynthesisRequest,
         cached_path: Path,
         *,
-        contents: str | None = None,
+        contents: Optional[str] = None,
     ) -> Path:
         if request.output_path:
             request.output_path.parent.mkdir(parents=True, exist_ok=True)
             if contents is None:
                 contents = cached_path.read_text(encoding="utf-8")
-            utils.atomic_write_text(request.output_path, contents)
+            request.output_path.write_text(contents, encoding="utf-8")
             return request.output_path
         return cached_path
 
