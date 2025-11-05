@@ -1,0 +1,4 @@
+include README.md
+include DEVELOPMENT.md
+include requirements.txt
+recursive-include sample *.txt *.md

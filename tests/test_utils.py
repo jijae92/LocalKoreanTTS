@@ -1,0 +1,376 @@
+"""Tests for utility helpers."""
+from __future__ import annotations
+
+import logging
+import subprocess
+import wave
+from pathlib import Path
+
+import pytest
+
+import localkoreantts.utils as utils
+
+
+def test_read_text_source_literal() -> None:
+    assert utils.read_text_source("hello", None) == "hello"
+
+
+def test_read_text_source_file(tmp_path: Path) -> None:
+    input_path = tmp_path / "input.txt"
+    input_path.write_text("안녕하세요", encoding="utf-8")
+    assert utils.read_text_source(None, input_path) == "안녕하세요"
+
+
+def test_read_text_source_missing() -> None:
+    with pytest.raises(ValueError):
+        utils.read_text_source(None, None)
+
+
+def test_get_env_float(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LK_TTS_SPEED", "1.5")
+    assert utils.get_env_float("LK_TTS_SPEED", 1.0) == 1.5
+
+
+def test_configure_logging_sets_level() -> None:
+    utils.configure_logging(verbose=True)
+    assert logging.getLogger("localkoreantts").level == logging.DEBUG
+
+
+def test_read_text_source_conflict(tmp_path: Path) -> None:
+    dummy = tmp_path / "dummy.txt"
+    dummy.write_text("hello", encoding="utf-8")
+    with pytest.raises(ValueError):
+        utils.read_text_source("text", dummy)
+
+
+def test_chunk_text_respects_max() -> None:
+    text = " ".join(f"문장 {i}." for i in range(500))
+    chunks = utils.chunk_text(text, max_chars=1500)
+    assert chunks, "Expected chunks to be produced"
+    for chunk in chunks:
+        assert len(chunk) <= 1500 + 40
+
+
+def test_chunk_maintains_sentence_boundaries() -> None:
+    text = "첫 문장입니다. 두 번째 문장입니다! 질문입니까? 마지막 문장입니다."
+    chunks = utils.chunk_text(text, max_chars=25)
+    assert chunks
+    for chunk in chunks[:-1]:
+        trimmed = chunk.rstrip()
+        assert trimmed[-1] in ".!?\n"
+
+
+def test_chunk_text_preserves_code_blocks() -> None:
+    text = (
+        "서론입니다.\n"
+        "```python\nprint('hello')\n```\n"
+        "결론입니다."
+    )
+    chunks = utils.chunk_text(text, max_chars=40)
+    block = next(chunk for chunk in chunks if "```python" in chunk)
+    assert block.count("```") == 2
+
+
+def test_chunk_text_without_sentence_preference() -> None:
+    text = "문장 하나. 문장 둘. 문장 셋."
+    chunks = utils.chunk_text(text, max_chars=10, prefer_sentence_boundary=False)
+    assert chunks
+    assert any(len(chunk) == 10 for chunk in chunks[:-1])
+
+
+def test_chunk_text_invalid_args() -> None:
+    with pytest.raises(ValueError):
+        utils.chunk_text("text", max_chars=0)
+    with pytest.raises(ValueError):
+        utils.chunk_text("text", overlap_chars=-1)
+
+
+def test_chunk_text_empty_returns_empty_list() -> None:
+    assert utils.chunk_text("") == []
+
+
+def test_concat_wavs_single_copy(tmp_path: Path) -> None:
+    wav_path = tmp_path / "source.wav"
+    _write_wav(wav_path, sample_rate=8000, duration=0.1)
+    out_path = tmp_path / "out.wav"
+    utils.concat_wavs_with_silence([str(wav_path)], str(out_path), silence_duration=0)
+    assert out_path.exists()
+
+
+def test_concat_wavs_mismatched_params(tmp_path: Path) -> None:
+    wav_a = tmp_path / "a.wav"
+    wav_b = tmp_path / "b.wav"
+    _write_wav(wav_a, sample_rate=8000, duration=0.1)
+    _write_wav(wav_b, sample_rate=16000, duration=0.1)
+    with pytest.raises(ValueError):
+        utils.concat_wavs_with_silence(
+            [str(wav_a), str(wav_b)],
+            str(tmp_path / "out.wav"),
+        )
+
+
+def test_chunk_text_overlap_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "localkoreantts.utils._tokenize_text",
+        lambda text, prefer_sentence_boundary: ["A" * 8, "B" * 5],
+    )
+    chunks = utils.chunk_text("dummy text", max_chars=10, overlap_chars=4)
+    assert len(chunks) >= 2
+
+
+def test_chunk_text_handles_available_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "localkoreantts.utils._tokenize_text",
+        lambda text, prefer_sentence_boundary: ["a", "b"],
+    )
+    chunks = utils.chunk_text("ab", max_chars=1, overlap_chars=1)
+    assert all(len(chunk) == 1 for chunk in chunks)
+
+
+def test_chunk_text_rollover_truncates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "localkoreantts.utils._tokenize_text",
+        lambda text, prefer_sentence_boundary: ["abcdef", "ghij"],
+    )
+    chunks = utils.chunk_text("placeholder", max_chars=3, overlap_chars=2)
+    assert all(len(chunk) <= 3 for chunk in chunks)
+
+
+def test_chunk_text_rollover_appends_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "localkoreantts.utils._tokenize_text",
+        lambda text, prefer_sentence_boundary: ["abcd", "ef"],
+    )
+    chunks = utils.chunk_text("placeholder", max_chars=4, overlap_chars=0)
+    assert chunks[0] == "abcd"
+    assert len(chunks) >= 2
+
+
+def test_chunk_text_skips_empty_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "localkoreantts.utils._tokenize_text",
+        lambda text, prefer_sentence_boundary: ["first", "", "last"],
+    )
+    chunks = utils.chunk_text("placeholder", max_chars=10, overlap_chars=0)
+    assert all(chunk for chunk in chunks)
+    assert chunks[-1].endswith("last")
+
+
+def test_split_sentences_blank_lines() -> None:
+    result = utils._split_sentences("첫 문장.\n\n둘째 문장.")
+    assert len(result) == 2
+
+
+def test_split_sentences_multiple_consecutive_newlines() -> None:
+    text = "첫째 문장\n\n\n둘째 문장"
+    result = utils._split_sentences(text)
+    assert any(segment.endswith("\n\n\n") for segment in result)
+    assert result[-1].startswith("둘째")
+
+
+def test_split_sentences_empty_segment_returns_empty() -> None:
+    assert utils._split_sentences("") == []
+
+
+def test_split_markdown_segments_unclosed_block() -> None:
+    text = "```code\nprint('hi')\n```\nNext line\n```still open"
+    segments = utils._split_markdown_segments(text)
+    assert segments[0][1] is True
+    assert segments[-1][1] is True
+
+
+def test_split_markdown_segments_empty_returns_default() -> None:
+    assert utils._split_markdown_segments("") == [("", False)]
+
+
+def test_run_ffmpeg_concat_invokes_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav_a = tmp_path / "a.wav"
+    wav_b = tmp_path / "b.wav"
+    out = tmp_path / "out.wav"
+    _write_wav(wav_a, sample_rate=8000, duration=0.05)
+    _write_wav(wav_b, sample_rate=8000, duration=0.05)
+
+    recorded: dict[str, list[str]] = {}
+
+    def fake_run(command: list[str]) -> None:
+        recorded["command"] = command
+        Path(command[-1]).write_bytes(b"RIFF")
+
+    monkeypatch.setattr("localkoreantts.utils._run_ffmpeg", fake_run)
+    utils._run_ffmpeg_concat(
+        [wav_a, wav_b],
+        out,
+        sample_rate=8000,
+        channels=1,
+        ffmpeg_bin="ffmpeg",
+    )
+    assert out.exists()
+    assert recorded["command"][0] == "ffmpeg"
+
+
+def test_generate_silence_wav_invokes_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    silence_path = tmp_path / "silence.wav"
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> None:
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"RIFF")
+
+    monkeypatch.setattr("localkoreantts.utils._run_ffmpeg", fake_run)
+    utils._generate_silence_wav(
+        silence_path,
+        duration=0.05,
+        sample_rate=8000,
+        channels=1,
+        ffmpeg_bin="ffmpeg",
+    )
+    assert silence_path.exists()
+    assert commands and commands[0][0] == "ffmpeg"
+
+
+def test_generate_silence_wav_multi_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    silence_path = tmp_path / "silence.wav"
+    recorded: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> None:
+        recorded.append(command)
+        Path(command[-1]).write_bytes(b"RIFF")
+
+    monkeypatch.setattr("localkoreantts.utils._run_ffmpeg", fake_run)
+    utils._generate_silence_wav(
+        silence_path,
+        duration=0.01,
+        sample_rate=12_000,
+        channels=3,
+        ffmpeg_bin="ffmpeg",
+    )
+    assert recorded and any(
+        "channel_layout=3c" in part for part in recorded[0]
+    )
+
+
+def test_inspect_wav_returns_properties(tmp_path: Path) -> None:
+    wav = tmp_path / "clip.wav"
+    _write_wav(wav, sample_rate=16000, duration=0.05)
+    channels, rate, width = utils._inspect_wav(wav)
+    assert channels == 1
+    assert rate == 16000
+    assert width == 2
+
+
+def test_concat_wavs_with_silence_empty_input(tmp_path: Path) -> None:
+    out_path = tmp_path / "out.wav"
+    with pytest.raises(ValueError):
+        utils.concat_wavs_with_silence([], str(out_path))
+
+
+def test_concat_wavs_with_missing_input(tmp_path: Path) -> None:
+    wav = tmp_path / "missing.wav"
+    with pytest.raises(FileNotFoundError):
+        utils.concat_wavs_with_silence([str(wav)], str(tmp_path / "out.wav"))
+
+
+def test_concat_wavs_with_silence_generates_padding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav_a = tmp_path / "a.wav"
+    wav_b = tmp_path / "b.wav"
+    _write_wav(wav_a, sample_rate=8_000, duration=0.05)
+    _write_wav(wav_b, sample_rate=8_000, duration=0.05)
+
+    generated: dict[str, list[str]] = {}
+
+    def fake_generate(
+        silence_path: Path,
+        *,
+        duration: float,
+        sample_rate: int,
+        channels: int,
+        ffmpeg_bin: str,
+    ) -> None:
+        generated["args"] = [
+            str(silence_path),
+            f"{duration}",
+            str(sample_rate),
+            str(channels),
+            ffmpeg_bin,
+        ]
+        silence_path.write_bytes(b"RIFF")
+
+    recorded: list[list[str]] = []
+
+    def fake_concat(
+        inputs: list[Path],
+        output_path: Path,
+        *,
+        sample_rate: int,
+        channels: int,
+        ffmpeg_bin: str,
+    ) -> None:
+        recorded.append([str(path) for path in inputs])
+        output_path.write_bytes(b"RIFF")
+
+    monkeypatch.setattr("localkoreantts.utils._generate_silence_wav", fake_generate)
+    monkeypatch.setattr("localkoreantts.utils._run_ffmpeg_concat", fake_concat)
+
+    out_path = tmp_path / "out.wav"
+    utils.concat_wavs_with_silence(
+        [str(wav_a), str(wav_b)],
+        str(out_path),
+        silence_duration=0.1,
+        ffmpeg_bin="ffmpeg",
+    )
+    assert out_path.exists()
+    assert generated["args"][0].endswith("silence.wav")
+    assert recorded and len(recorded[0]) == 3
+
+
+def test_concat_wavs_cleanup_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wav_a = tmp_path / "a.wav"
+    wav_b = tmp_path / "b.wav"
+    _write_wav(wav_a, sample_rate=8_000, duration=0.05)
+    _write_wav(wav_b, sample_rate=8_000, duration=0.05)
+
+    def fake_concat(
+        inputs: list[Path],
+        output_path: Path,
+        *,
+        sample_rate: int,
+        channels: int,
+        ffmpeg_bin: str,
+    ) -> None:
+        output_path.write_bytes(b"RIFF")
+        raise RuntimeError("ffmpeg failed")
+
+    monkeypatch.setattr("localkoreantts.utils._run_ffmpeg_concat", fake_concat)
+
+    out_path = tmp_path / "out.wav"
+    with pytest.raises(RuntimeError):
+        utils.concat_wavs_with_silence([str(wav_a), str(wav_b)], str(out_path))
+    assert not out_path.exists()
+
+
+def test_run_ffmpeg_raises_on_called_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str], check: bool) -> None:
+        raise subprocess.CalledProcessError(returncode=1, cmd=command)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    with pytest.raises(RuntimeError):
+        utils._run_ffmpeg(["ffmpeg", "-version"])
+
+
+def _write_wav(path: Path, *, sample_rate: int, duration: float) -> None:
+    frames = int(sample_rate * duration)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frames)

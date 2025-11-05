@@ -1,0 +1,11 @@
+# Core package (editable install)
+-e .
+
+# Tooling and test dependencies
+coverage>=7.11,<8
+mypy>=1.11,<1.12
+pytest>=8.4,<9
+pytest-cov>=7,<8
+pytest-mock>=3.15,<4
+pytest-qt>=4.3,<5
+ruff>=0.6,<0.7

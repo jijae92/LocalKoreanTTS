@@ -1,0 +1,359 @@
+"""Tests for the synthesis engine."""
+from __future__ import annotations
+
+import io
+import wave
+from pathlib import Path
+from typing import Any, cast
+
+import pytest
+
+from localkoreantts import tts
+from localkoreantts.tts import LocalVITS, SynthesisRequest, TextToSpeechEngine
+
+
+def _make_silence(sample_rate: int = 22_050) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * (sample_rate // 10))
+    return buffer.getvalue()
+
+
+def test_synthesize_caches_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+    output_path = tmp_path / "output.txt"
+    request = SynthesisRequest(text="테스트", output_path=output_path)
+    first = engine.synthesize(request)
+    assert first.output_path.exists()
+    second = engine.synthesize(request)
+    assert second.from_cache is True
+    assert second.output_path.exists()
+
+
+def test_dry_run_does_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+    request = SynthesisRequest(text="dry run sample", dry_run=True)
+    result = engine.synthesize(request)
+    assert not result.output_path.exists()
+
+
+def test_localvits_synthesize_writes_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tts, "load_model", lambda model_path: object())
+
+    fake_wav = _make_silence()
+
+    def mock_generate(self: LocalVITS, text: str, speed: float = 1.0) -> bytes:
+        return fake_wav
+
+    monkeypatch.setattr(LocalVITS, "generate_wav_bytes", mock_generate)
+
+    engine = LocalVITS(model_path="dummy-vits.onnx")
+    out_path = tmp_path / "result.wav"
+    engine.synthesize_to_wav("테스트", str(out_path))
+
+    data = out_path.read_bytes()
+    assert data.startswith(b"RIFF")
+
+
+def test_localvits_generate_wav_bytes_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    samples = [0.0, 0.5, -0.5]
+
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> list[float]:
+            return samples
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    engine = LocalVITS(model_path="dummy")
+    wav_bytes = engine.generate_wav_bytes("hello")
+    assert wav_bytes.startswith(b"RIFF")
+
+
+def test_localvits_generate_wav_bytes_nested(monkeypatch: pytest.MonkeyPatch) -> None:
+    nested_samples = [[0.0, 0.25], [0.25, 0.0]]
+
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> list[list[float]]:
+            return nested_samples
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    engine = LocalVITS(model_path="dummy")
+    wav_bytes = engine.generate_wav_bytes("multi")
+    assert wav_bytes.startswith(b"RIFF")
+
+
+def test_localvits_speed_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> bytes:
+            return _make_silence()
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    engine = LocalVITS(model_path="dummy")
+    with pytest.raises(ValueError):
+        engine.synthesize_to_wav("text", "out.wav", speed=0.0)
+
+
+def test_localvits_invalid_sample_rate() -> None:
+    with pytest.raises(ValueError):
+        LocalVITS(model_path="dummy", sample_rate=0)
+
+
+def test_localvits_uses_model_sample_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyModel:
+        sample_rate = 48_000
+
+        def synthesize(self, text: str, speed: float) -> bytes:
+            return b"RIFF"
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    vits = LocalVITS(model_path="dummy", sample_rate=22_050)
+    assert vits.sample_rate == 48_000
+
+
+def test_text_to_speech_engine_writes_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+    request = SynthesisRequest(text="테스트", output_path=tmp_path / "out.txt")
+    result = engine.synthesize(request)
+    assert result.output_path.exists()
+    assert "테스트" in result.output_path.read_text(encoding="utf-8")
+
+
+def test_text_to_speech_engine_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+    request = SynthesisRequest(
+        text="dry run case",
+        output_path=tmp_path / "expected.txt",
+        dry_run=True,
+    )
+    result = engine.synthesize(request)
+    assert result.output_path == tmp_path / "expected.txt"
+    assert not result.output_path.exists()
+    assert result.from_cache is False
+
+
+def test_text_to_speech_engine_without_output_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+    request = SynthesisRequest(text="no output path provided")
+    result = engine.synthesize(request)
+    assert result.output_path.exists()
+    cache_base = Path(tmp_path / "cache").resolve()
+    assert result.output_path.parent.parent == cache_base
+
+
+def test_text_to_speech_engine_rejects_empty_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+    with pytest.raises(ValueError):
+        engine.synthesize(SynthesisRequest(text="   "))
+
+
+def test_load_model_requires_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tts, "_CoquiTTS", None)
+    with pytest.raises(RuntimeError):
+        tts.load_model("missing")
+
+
+def test_load_model_adapter_wrap(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Dummy:
+        sample_rate = 16_000
+
+        def tts(self, text: str, speed: float) -> bytes:
+            return b"RIFFmock"
+
+    monkeypatch.setattr(tts, "_CoquiTTS", lambda model_path: Dummy())
+    handle = tts.load_model("dummy")
+    assert handle.sample_rate == 16_000
+    assert handle.synthesize("hi", 1.0) == b"RIFFmock"
+
+
+def test_localvits_generate_wav_bytes_rejects_empty(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> bytes:
+            return b"RIFF"
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    vits = LocalVITS(model_path="dummy")
+    with pytest.raises(ValueError):
+        vits.generate_wav_bytes("  ")
+
+
+def test_localvits_generate_wav_bytes_returns_raw(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> bytes:
+            return b"RIFFraw"
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    vits = LocalVITS(model_path="dummy")
+    assert vits.generate_wav_bytes("text") == b"RIFFraw"
+
+
+def test_localvits_properties(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyModel:
+        sample_rate = 32_000
+
+        def synthesize(self, text: str, speed: float) -> bytes:
+            return b"RIFF"
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    vits = LocalVITS(model_path="dummy", sample_rate=22_050, ffmpeg_bin="custom-ffmpeg")
+    assert vits.model_path == "dummy"
+    assert vits.sample_rate == 32_000
+    assert vits.ffmpeg_bin == "custom-ffmpeg"
+
+
+def test_localvits_generate_wav_bytes_speed_validation(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> bytes:
+            return b"RIFF"
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    vits = LocalVITS(model_path="dummy")
+    with pytest.raises(ValueError):
+        vits.generate_wav_bytes("text", speed=0.0)
+
+
+def test_localvits_encode_samples_handles_tolist(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class WithToList:
+        def __init__(self) -> None:
+            self._values = [0.1, -0.1]
+
+        def tolist(self) -> list[float]:
+            return self._values
+
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> WithToList:
+            return WithToList()
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    vits = LocalVITS(model_path="dummy")
+    wav_bytes = vits.generate_wav_bytes("tolist")
+    assert wav_bytes.startswith(b"RIFF")
+
+
+def test_localvits_encode_samples_rejects_bytes(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> bytes:
+            return b"RIFF"
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    vits = LocalVITS(model_path="dummy")
+    with pytest.raises(RuntimeError):
+        vits._encode_samples(cast(Any, b"raw"))
+
+
+def test_localvits_encode_samples_requires_data(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummyModel:
+        sample_rate = 22_050
+
+        def synthesize(self, text: str, speed: float) -> list[float]:
+            return []
+
+    monkeypatch.setattr(tts, "load_model", lambda path: DummyModel())
+    vits = LocalVITS(model_path="dummy")
+    with pytest.raises(RuntimeError):
+        vits.generate_wav_bytes("empty")
+
+
+def test_text_to_speech_engine_properties(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("LK_TTS_SPEED", "1.5")
+    monkeypatch.setenv("LK_TTS_SAMPLE_RATE", "44100")
+    model_path = tmp_path / "model.onnx"
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_bytes(b"model")
+    monkeypatch.setenv("LK_TTS_MODEL_PATH", str(model_path))
+    engine = TextToSpeechEngine()
+    assert engine.model_path.exists()
+    assert engine.default_speed == pytest.approx(1.5)
+    assert engine.default_sample_rate == 44_100
+    assert engine.ffmpeg_bin == "ffmpeg"
+
+
+def test_text_to_speech_engine_normalize_speed_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+    request = SynthesisRequest(text="속도", speed=0.0)
+    with pytest.raises(ValueError):
+        engine._normalize_request(request)
+
+
+def test_text_to_speech_engine_asserts_on_missing_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+
+    def fake_normalize(
+        self: TextToSpeechEngine, request: SynthesisRequest
+    ) -> SynthesisRequest:
+        return SynthesisRequest(text=request.text, speed=None, sample_rate=None)
+
+    monkeypatch.setattr(TextToSpeechEngine, "_normalize_request", fake_normalize)
+    with pytest.raises(AssertionError):
+        engine.synthesize(SynthesisRequest(text="테스트"))
+
+
+def test_text_to_speech_engine_handle_target_path_reads_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LK_TTS_CACHE_DIR", str(tmp_path / "cache"))
+    engine = TextToSpeechEngine()
+    cached = tmp_path / "cached.txt"
+    cached.write_text("cached", encoding="utf-8")
+    request = SynthesisRequest(text="copy", output_path=tmp_path / "final.txt")
+    result = engine._handle_target_path(request, cached_path=cached, contents=None)
+    assert result == request.output_path
+    assert result.read_text(encoding="utf-8") == "cached"

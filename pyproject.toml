@@ -1,0 +1,133 @@
+[build-system]
+requires = [
+    "poetry-core",
+]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "localkoreantts"
+version = "0.1.0"
+description = "Local Korean TTS tooling with CLI, caching, and tests"
+authors = [
+    "Local Korean TTS Maintainers <maintainers@example.com>",
+]
+readme = "README.md"
+license = "MIT"
+packages = [
+    { include = "localkoreantts", from = "src" },
+]
+include = [
+    "requirements.txt",
+    "DEVELOPMENT.md",
+    "sample/*.txt",
+    "sample/sample.md",
+]
+maintainers = [
+    "Local Korean TTS Team <maintainers@example.com>",
+]
+homepage = "https://github.com/your-org/LocalKoreanTTS"
+repository = "https://github.com/your-org/LocalKoreanTTS"
+documentation = "https://github.com/your-org/LocalKoreanTTS"
+keywords = [
+    "korean",
+    "tts",
+    "speech",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+PySide6 = {version = ">=6.7,<7", optional = true}
+"pytest-qt" = {version = ">=4.3,<5", optional = true}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-cov = "^4.1.0"
+pytest-qt = "^4.3.1"
+ruff = "^0.6.4"
+mypy = "^1.11.1"
+
+[tool.poetry.scripts]
+localkoreantts = "localkoreantts.cli:main"
+localkoreantts-gui = "localkoreantts.gui.app:main"
+
+[tool.poetry.extras]
+gui = ["PySide6"]
+tests-gui = ["pytest-qt"]
+
+[tool.poetry.urls]
+Changelog = "https://github.com/your-org/LocalKoreanTTS/releases"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = [
+    "src",
+    "tests",
+]
+mypy_path = [
+    "src",
+]
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+plugins = []
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "B",
+    "I",
+    "UP",
+]
+ignore = [
+    "TD002",
+    "TD003",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers"
+testpaths = [
+    "tests",
+]
+markers = [
+    "gui: GUI 관련 테스트",
+    "qt: PySide6/PyQt GUI tests",
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "src/localkoreantts",
+]
+omit = [
+    "src/localkoreantts/__init__.py",
+    "src/localkoreantts/gui/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
+
+[tool.coverage.paths]
+source = [
+    "src/localkoreantts",
+]
